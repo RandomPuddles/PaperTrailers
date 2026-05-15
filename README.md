@@ -14,3 +14,12 @@ Slide 3: AI Solution – Utilizing [AI Tools/Frameworks] with a workflow focused
 Slide 4: Prototype – A quick look at our [Screenshots/Demo] and how it functions.
 Slide 5: Future Scope – Plans for [Improvements] and [Scaling] for real-world use.
 Closing Message – "Think boldly. Build simply. Present confidently."
+
+
+Link to Upload your PPT
+https://drive.google.com/drive/folders/1DaRz17dSwMhtQLg3Tf0KCy7bifZ6rYLS?usp=sharing
+
+
+
+
+
