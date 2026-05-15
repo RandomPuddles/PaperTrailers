@@ -1,11 +1,11 @@
 """
 Backend.py
 
-Backend for a Streamlit AI Meeting Task + Research Assistant.
+Backend for a Streamlit AI Meeting Task + Research Assistant using Gemini.
 
 What it does:
 1. Takes a meeting transcript from your Streamlit UI.
-2. Uses ChatGPT/OpenAI to extract:
+2. Uses Gemini to extract:
    - participants
    - tasks
    - assignments
@@ -16,16 +16,16 @@ What it does:
 
 Install required packages:
 
-    pip install openai pydantic openpyxl python-dotenv kagglehub
+    pip install streamlit google-genai pydantic openpyxl python-dotenv kagglehub pandas
 
 Create a .env file in the same folder:
 
-    OPENAI_API_KEY=your_openai_api_key_here
-    OPENAI_MODEL=gpt-4o-mini
+    GEMINI_API_KEY=your_gemini_api_key_here
+    GEMINI_MODEL=gemini-2.5-flash
 
 Optional:
 
-    ARXIV_JSONL_PATH=C:\\path\\to\\arxiv-metadata-oai-snapshot.json
+    ARXIV_JSONL_PATH=C:/path/to/arxiv-metadata-oai-snapshot.json
 
 If ARXIV_JSONL_PATH is not provided, the program will try to download
 the Kaggle arXiv dataset from the internet using kagglehub.
@@ -33,25 +33,7 @@ the Kaggle arXiv dataset from the internet using kagglehub.
 If Kaggle asks for credentials, create a Kaggle API token from your Kaggle
 account settings and place kaggle.json in:
 
-    C:\\Users\\YOUR_USERNAME\\.kaggle\\kaggle.json
-
-For Streamlit, your frontend can do something like:
-
-    from Backend import ResearchAssistantBackend
-
-    backend = ResearchAssistantBackend()
-    result = backend.process_transcript(transcript)
-
-    st.dataframe(result["tasks"])
-    st.dataframe(result["assignments"])
-    st.dataframe(result["research_recommendations"])
-
-    with open(result["excel_path"], "rb") as file:
-        st.download_button(
-            label="Download Excel File",
-            data=file,
-            file_name="meeting_research_output.xlsx"
-        )
+    C:/Users/YOUR_USERNAME/.kaggle/kaggle.json
 """
 
 from __future__ import annotations
@@ -61,25 +43,27 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, Any
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import kagglehub
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
+from google.genai import types
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from pydantic import BaseModel, Field
 
 
 # ============================================================
-# ChatGPT structured output models
+# Gemini structured output models
 # ============================================================
 
 class TaskItem(BaseModel):
     task_id: int = Field(description="Unique task number, starting at 1.")
     description: str = Field(description="Clean task/action item extracted from the meeting.")
-    suggested_owner: Optional[str] = Field(
-        description="The person who seems responsible for this task, or null if unclear."
+    suggested_owner: str = Field(
+        default="",
+        description="The person who seems responsible for this task. Empty string if unclear."
     )
     evidence: str = Field(
         description="Short quote or explanation from the transcript supporting this task."
@@ -96,9 +80,9 @@ class AssignmentItem(BaseModel):
 
 
 class MeetingAnalysis(BaseModel):
-    participants: List[str]
-    tasks: List[TaskItem]
-    assignments: List[AssignmentItem]
+    participants: List[str] = Field(description="People detected in the transcript.")
+    tasks: List[TaskItem] = Field(description="Tasks extracted from the transcript.")
+    assignments: List[AssignmentItem] = Field(description="Task assignments by person.")
 
 
 # ============================================================
@@ -127,7 +111,7 @@ def get_arxiv_dataset_path() -> Path:
     Downloads the Kaggle arXiv dataset if needed and returns the path
     to arxiv-metadata-oai-snapshot.json.
 
-    Dataset:
+    Dataset handle:
     Cornell-University/arxiv
     """
 
@@ -162,31 +146,27 @@ class ResearchAssistantBackend:
         """
         Streamlit-friendly backend constructor.
 
-        You can pass api_key directly from Streamlit secrets if you want:
+        You can pass api_key directly from the Streamlit sidebar,
+        or use a .env file:
 
-            backend = ResearchAssistantBackend(
-                api_key=st.secrets["OPENAI_API_KEY"]
-            )
-
-        Or you can use a .env file:
-
-            OPENAI_API_KEY=your_key_here
+            GEMINI_API_KEY=your_key_here
+            GEMINI_MODEL=gemini-2.5-flash
         """
 
         load_dotenv()
 
-        api_key = api_key or os.getenv("OPENAI_API_KEY")
+        api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
         if not api_key:
             raise ValueError(
-                "OPENAI_API_KEY is missing.\n\n"
-                "Either create a .env file with:\n"
-                "OPENAI_API_KEY=your_openai_api_key_here\n\n"
-                "or pass api_key into ResearchAssistantBackend(api_key=...)."
+                "GEMINI_API_KEY is missing.\n\n"
+                "Create a .env file with:\n"
+                "GEMINI_API_KEY=your_gemini_api_key_here\n\n"
+                "or paste your Gemini API key into the Streamlit sidebar."
             )
 
-        self.client = OpenAI(api_key=api_key)
-        self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        self.client = genai.Client(api_key=api_key)
+        self.model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
         if arxiv_jsonl_path:
             self.arxiv_jsonl_path = Path(arxiv_jsonl_path)
@@ -201,12 +181,12 @@ class ResearchAssistantBackend:
             )
 
     # ========================================================
-    # Step 1: Analyze transcript with ChatGPT
+    # Step 1: Analyze transcript with Gemini
     # ========================================================
 
     def analyze_transcript(self, transcript: str) -> MeetingAnalysis:
         """
-        Sends the transcript to ChatGPT/OpenAI and receives structured output.
+        Sends the transcript to Gemini and receives structured JSON output.
         """
 
         if not transcript.strip():
@@ -232,22 +212,28 @@ Rules:
 - If no tasks are found, return empty lists for tasks and assignments.
 """
 
-        response = self.client.responses.parse(
+        response = self.client.models.generate_content(
             model=self.model,
-            input=[
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": transcript,
-                },
-            ],
-            text_format=MeetingAnalysis,
+            contents=transcript,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.2,
+                max_output_tokens=4096,
+                response_mime_type="application/json",
+                response_json_schema=MeetingAnalysis.model_json_schema(),
+            ),
         )
 
-        return response.output_parsed
+        json_text = self._extract_json_string(response.text)
+
+        try:
+            return MeetingAnalysis.model_validate_json(json_text)
+        except Exception as error:
+            raise ValueError(
+                "Gemini returned output, but it could not be parsed into the expected structure.\n\n"
+                f"Raw Gemini output:\n{response.text}\n\n"
+                f"Original parsing error:\n{error}"
+            ) from error
 
     # ========================================================
     # Step 2: Search arXiv dataset
@@ -280,7 +266,11 @@ Rules:
         query_by_person: Dict[str, str] = {
             assignment.person: assignment.research_query
             for assignment in analysis.assignments
+            if assignment.research_query.strip()
         }
+
+        if not query_by_person:
+            return []
 
         query_terms_by_person: Dict[str, List[str]] = {
             person: self._tokenize(query)
@@ -303,6 +293,9 @@ Rules:
                     continue
 
                 for person, terms in query_terms_by_person.items():
+                    if not terms:
+                        continue
+
                     score = self._score_record(record, terms)
 
                     if score <= 0:
@@ -382,7 +375,7 @@ Rules:
             ws_tasks.append([
                 task.task_id,
                 self._excel_safe(task.description),
-                self._excel_safe(task.suggested_owner or ""),
+                self._excel_safe(task.suggested_owner),
                 self._excel_safe(task.evidence),
             ])
 
@@ -475,19 +468,6 @@ Rules:
         """
         This is the main method your Streamlit frontend should call.
 
-        Example Streamlit usage:
-
-            backend = ResearchAssistantBackend()
-            result = backend.process_transcript(
-                transcript=user_text,
-                output_excel_path="meeting_research_output.xlsx",
-                progress_callback=st.info
-            )
-
-            st.dataframe(result["tasks"])
-            st.dataframe(result["assignments"])
-            st.dataframe(result["research_recommendations"])
-
         Returns:
             Dictionary containing:
             - excel_path
@@ -497,7 +477,7 @@ Rules:
             - research_recommendations
         """
 
-        self._send_progress(progress_callback, "Analyzing transcript with ChatGPT...")
+        self._send_progress(progress_callback, "Analyzing transcript with Gemini...")
         analysis = self.analyze_transcript(transcript)
 
         self._send_progress(progress_callback, "Searching arXiv research papers...")
@@ -543,7 +523,7 @@ Rules:
             {
                 "Task ID": task.task_id,
                 "Description": task.description,
-                "Suggested Owner": task.suggested_owner or "",
+                "Suggested Owner": task.suggested_owner,
                 "Evidence": task.evidence,
             }
             for task in analysis.tasks
@@ -586,13 +566,6 @@ Rules:
         progress_callback: Optional[Callable[[str], None]],
         message: str,
     ) -> None:
-        """
-        Lets Streamlit show progress messages without importing Streamlit here.
-
-        Example:
-            backend.process_transcript(..., progress_callback=st.info)
-        """
-
         if progress_callback:
             progress_callback(message)
 
@@ -632,13 +605,8 @@ Rules:
         score = 0.0
 
         for term in query_terms:
-            # Title matches are very important.
             score += title.count(term) * 10
-
-            # arXiv categories are useful topic clues.
             score += categories.count(term) * 5
-
-            # Abstract matches are common, so they are weighted lower.
             score += abstract.count(term) * 2
 
         return score
@@ -710,6 +678,26 @@ Rules:
                 ws.column_dimensions[column_letter].width = width
 
             ws.freeze_panes = "A2"
+
+    def _extract_json_string(self, text: str) -> str:
+        """
+        Gemini should return pure JSON because response_mime_type is application/json.
+        This function also handles accidental markdown code fences just in case.
+        """
+
+        cleaned = text.strip()
+
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+            cleaned = re.sub(r"```$", "", cleaned).strip()
+
+        first_brace = cleaned.find("{")
+        last_brace = cleaned.rfind("}")
+
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            cleaned = cleaned[first_brace:last_brace + 1]
+
+        return cleaned
 
 
 # ============================================================
